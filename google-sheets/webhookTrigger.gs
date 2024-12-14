@@ -5,14 +5,32 @@
  * Created: 2024-12-14
  * Last Modified: 2024-12-14
  * 
- * Purpose: This script triggers a webhook when specific changes are made to a Google Sheet.
+ * Purpose: This script triggers a webhook when:
+ * 1. A specific column is edited
+ * 2. A new row is inserted
  * It sends the updated row data to a specified webhook URL.
  * 
- * Instructions:
- * 1. Set the user-configurable parameters below.
- * 2. Set up a trigger for this function on edit and when a row is inserted.
+ * Integration Instructions:
+ * 1. Open your Google Sheet
+ * 2. Click on Extensions > Apps Script
+ * 3. Create a new file named 'webhookTrigger.gs'
+ * 4. Copy and paste this entire script
+ * 5. Configure the parameters below
+ * 6. Click Save (disk icon or Ctrl/Cmd + S)
+ * 7. Set up triggers:
+ *    - Click on "Triggers" (clock icon) in the left sidebar
+ *    - Click "+ Add Trigger" button
+ *    - Choose function: triggerGoogleSheetWebhook
+ *    - Choose event source: From spreadsheet
+ *    - Select event type: On edit
+ *    - Add another trigger for "On form submit" if using Google Forms
+ * 8. Authorize the script when prompted
+ * 9. Test by editing a cell in your watched column and by inserting a new row
  * 
- * Credit: Eyal Gershon & PPLX
+ * Troubleshooting:
+ * - View execution logs: View > Execution log
+ * - Check trigger runs: View > Execution log history
+ * - Verify webhook URL is accessible and accepts POST requests
  */
 
 // User-configurable parameters
@@ -22,20 +40,28 @@ const WEBHOOK_URL = "https://your-webhook-url.com";  // Your webhook URL
 
 function triggerGoogleSheetWebhook(e) {
   try {
-    // Exit if the change type is not EDIT or INSERT_ROW
-    if (e.changeType !== "EDIT" && e.changeType !== "INSERT_ROW") return;
-    
     const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
     const sheet = spreadsheet.getSheetByName(SHEET_NAME);
     const headings = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
     
-    const activeRange = sheet.getActiveRange();
-    const row = activeRange.getRow();
-    const column = activeRange.getColumn();
-    
-    // Exit if it's an EDIT event and the changed column is not the one we're watching
-    if (e.changeType === "EDIT" && column !== COLUMN_TO_WATCH) return;
-    
+    let row, triggerWebhook = false;
+
+    if (e.changeType === "INSERT_ROW") {
+      row = e.source.getActiveRange().getRow();
+      triggerWebhook = true;
+    } else if (e.changeType === "EDIT") {
+      const activeRange = sheet.getActiveRange();
+      row = activeRange.getRow();
+      const column = activeRange.getColumn();
+      
+      // Trigger webhook if the edited column is the one we're watching
+      if (column === COLUMN_TO_WATCH) {
+        triggerWebhook = true;
+      }
+    }
+
+    if (!triggerWebhook) return;
+
     // Get the values of the entire row
     const values = sheet.getRange(row, 1, 1, headings.length).getValues()[0];
     
@@ -43,6 +69,7 @@ function triggerGoogleSheetWebhook(e) {
     const payload = {
       row_number: row,
       timestamp: new Date().toISOString(),
+      change_type: e.changeType,
       ...Object.fromEntries(headings.map((name, i) => [name, values[i]]))
     };
     
@@ -59,7 +86,7 @@ function triggerGoogleSheetWebhook(e) {
     if (response.getResponseCode() !== 200) {
       console.error(`Failed to send webhook: ${response.getContentText()}`);
     } else {
-      console.log('Webhook sent successfully');
+      console.log(`Webhook sent successfully for ${e.changeType} event on row ${row}`);
     }
   } catch (error) {
     console.error(`Error in triggerGoogleSheetWebhook: ${error.toString()}`);
