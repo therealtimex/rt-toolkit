@@ -15,17 +15,18 @@
  * 2. Click on Extensions > Apps Script
  * 3. Create a new file named 'webhookTrigger.gs'
  * 4. Copy and paste this entire script
- * 5. Configure the parameters below
- * 6. Click Save (disk icon or Ctrl/Cmd + S)
- * 7. Set up triggers:
+ * 5. Configure the WEBHOOK_URL parameter below (required)
+ * 6. Optionally configure SHEET_NAME and COLUMN_TO_WATCH
+ * 7. Click Save (disk icon or Ctrl/Cmd + S)
+ * 8. Set up triggers:
  *    - Click on "Triggers" (clock icon) in the left sidebar
  *    - Click "+ Add Trigger" button
  *    - Choose function: triggerGoogleSheetWebhook
  *    - Choose event source: From spreadsheet
  *    - Select event type: On edit
  *    - Add another trigger for "On form submit" if using Google Forms
- * 8. Authorize the script when prompted
- * 9. Test by editing a cell in your watched column and by inserting a new row
+ * 9. Authorize the script when prompted
+ * 10. Test by editing a cell in your watched column and by inserting a new row
  * 
  * Troubleshooting:
  * - View execution logs: View > Execution log
@@ -34,15 +35,16 @@
  */
 
 // User-configurable parameters
-const SHEET_NAME = "YourSheetName";  // Name of the sheet to watch
-const COLUMN_TO_WATCH = 3;           // Column number to trigger the webhook (e.g., 3 for column C)
-const WEBHOOK_URL = "https://your-webhook-url.com";  // Your webhook URL
+const WEBHOOK_URL = "https://your-webhook-url.com";  // Your webhook URL (required)
+const SHEET_NAME = "";  // Name of the sheet to watch (leave empty for first sheet)
+const COLUMN_TO_WATCH = 0;  // Column number to trigger the webhook (0 for last column)
 
 function triggerGoogleSheetWebhook(e) {
   try {
     const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-    const sheet = spreadsheet.getSheetByName(SHEET_NAME);
+    const sheet = SHEET_NAME ? spreadsheet.getSheetByName(SHEET_NAME) : spreadsheet.getSheets()[0];
     const headings = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    const columnToWatch = COLUMN_TO_WATCH || sheet.getLastColumn();
     
     let row, triggerWebhook = false;
 
@@ -55,7 +57,7 @@ function triggerGoogleSheetWebhook(e) {
       const column = activeRange.getColumn();
       
       // Trigger webhook if the edited column is the one we're watching
-      if (column === COLUMN_TO_WATCH) {
+      if (column === columnToWatch) {
         triggerWebhook = true;
       }
     }
