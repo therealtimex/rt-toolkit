@@ -1,107 +1,212 @@
 /**
  * Google Sheets Webhook Trigger
+ * ============================
  * 
  * Author: Trung Le at RealTimeX.co
  * Created: 2024-12-14
- * Last Modified: 2024-12-14
+ * Last Modified: 2024-12-17
+ * Version: 1.1.0
  * 
- * Purpose: This script triggers a webhook when:
- * 1. A specific column is edited
- * 2. A new row is inserted
- * It sends the updated row data to a specified webhook URL.
+ * Description:
+ * ------------
+ * This script monitors specific column changes in a Google Sheet and sends the updated
+ * row data to a webhook endpoint. It handles both form submissions and manual edits,
+ * with configurable column watching and robust error handling.
  * 
- * Integration Instructions:
+ * Features:
+ * ---------
+ * - Monitors specific column changes for manual edits
+ * - Captures all form submissions automatically
+ * - Queued webhook processing with retries
+ * - HMAC signature for webhook security
+ * - Comprehensive error logging
+ * - Configurable sheet and column targeting
+ * 
+ * Configuration:
+ * -------------
+ * WEBHOOK_URL: Your webhook endpoint URL (required)
+ * WEBHOOK_SECRET: Secret key for HMAC signature (required)
+ * SHEET_NAME: Target sheet name (optional, defaults to first sheet)
+ * COLUMN_TO_WATCH: Column number to monitor for manual edits (required)
+ * 
+ * Installation Instructions:
+ * ------------------------
  * 1. Open your Google Sheet
- * 2. Click on Extensions > Apps Script
- * 3. Create a new file named 'webhookTrigger.gs'
- * 4. Copy and paste this entire script
- * 5. Configure the WEBHOOK_URL parameter below (required)
- * 6. Optionally configure SHEET_NAME and COLUMN_TO_WATCH
- * 7. Click Save (disk icon or Ctrl/Cmd + S)
- * 8. Set up triggers:
- *    - Click on "Triggers" (clock icon) in the left sidebar
- *    - Click "+ Add Trigger" button
- *    - Choose function: triggerGoogleSheetWebhook
- *    - Choose event source: From spreadsheet
- *    - Select event type: On edit
- *    - Add another trigger for "On form submit" if using Google Forms
- * 9. Authorize the script when prompted
- * 10. Test by editing a cell in your watched column and by inserting a new row
+ * 2. Click Extensions > Apps Script
+ * 3. Copy this entire script into the editor
+ * 4. Configure the constants (WEBHOOK_URL, etc.)
+ * 5. Save the script
  * 
- * Troubleshooting:
- * - View execution logs: View > Execution log
- * - Check trigger runs: View > Execution log history
- * - Verify webhook URL is accessible and accepts POST requests
- */
-
-// User-configurable parameters
-/**
- * Enhanced Google Sheets Webhook Trigger
+ * Trigger Setup:
+ * -------------
+ * Two triggers are required:
  * 
- * Author: Trung Le at RealTimeX.co
- * Created: 2024-12-14
- * Last Modified: 2024-12-14
+ * 1. Edit Trigger:
+ *    - Click "Triggers" in the left sidebar
+ *    - Click "+ Add Trigger"
+ *    - Choose function: installableOnEdit
+ *    - Event source: From spreadsheet
+ *    - Event type: On edit
  * 
- * Purpose: Triggers a webhook when a specific column is edited or a new row is inserted.
- * Sends the updated row data to a specified webhook URL with improved security, reliability, and performance.
+ * 2. Form Submit Trigger:
+ *    - Click "+ Add Trigger" again
+ *    - Choose function: onFormSubmit
+ *    - Event source: From spreadsheet
+ *    - Event type: On form submit
+ * 
+ * Webhook Payload Format:
+ * ---------------------
+ * For Edit Events:
+ * {
+ *   "row_number": number,
+ *   "timestamp": string (ISO format),
+ *   "change_type": "EDIT",
+ *   "edited_column": string,
+ *   "old_value": string,
+ *   "new_value": string,
+ *   ...row_data
+ * }
+ * 
+ * For Form Submit Events:
+ * {
+ *   "row_number": number,
+ *   "timestamp": string (ISO format),
+ *   "change_type": "FORM_SUBMIT",
+ *   ...form_response_data
+ * }
+ * 
+ * Security:
+ * --------
+ * - Uses HMAC-SHA256 signatures
+ * - Includes webhook secret verification
+ * - Runs with authorized user permissions
+ * 
+ * Error Handling:
+ * --------------
+ * - Automatic retry mechanism (3 attempts)
+ * - Exponential backoff between retries
+ * - Detailed error logging
+ * - Queue-based processing
+ * 
+ * Limitations:
+ * -----------
+ * - Requires UrlFetchApp permissions
+ * - Maximum execution time of 6 minutes
+ * - Maximum payload size determined by webhook endpoint
+ * - Form submissions must be linked to the sheet
+ * 
+ * Dependencies:
+ * ------------
+ * - Google Apps Script
+ * - UrlFetchApp service
+ * - Properties service (for configuration)
+ * - Google Forms (for form submission feature)
+ * 
+ * Support:
+ * -------
+ * For issues or feature requests, contact:
+ * Email: support@realtimex.co
+ * 
+ * License:
+ * -------
+ * Copyright (c) 2024 RealTimeX.co
+ * All rights reserved.
  */
 
 // User-configurable parameters
 const WEBHOOK_URL = "https://your-webhook-url.com";  // Your webhook URL (required)
-const WEBHOOK_SECRET = "your_secret_token";  // Secret token for webhook authentication
+const WEBHOOK_SECRET = "your_secret_token";  // Secret token for webhook authentication (required)
 const SHEET_NAME = "";  // Name of the sheet to watch (leave empty for first sheet)
 const COLUMN_TO_WATCH = 0;  // Column number to trigger the webhook (0 for last column)
 
 // Constants
 const MAX_RETRIES = 3;
-const RETRY_DELAY = 1000; // milliseconds
-const QUEUE_PROCESS_INTERVAL = 5000; // milliseconds
+const RETRY_DELAY = 1000;
+const QUEUE_PROCESS_INTERVAL = 5000;
 
 // Global variables
 let webhookQueue = [];
 let isProcessingQueue = false;
 
-function triggerGoogleSheetWebhook(e) {
+function onFormSubmit(e) {
   try {
     const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
     const sheet = SHEET_NAME ? spreadsheet.getSheetByName(SHEET_NAME) : spreadsheet.getSheets()[0];
     const headings = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    const columnToWatch = COLUMN_TO_WATCH || sheet.getLastColumn();
     
-    let row, triggerWebhook = false;
-
-    if (e.changeType === "INSERT_ROW") {
-      row = e.source.getActiveRange().getRow();
-      triggerWebhook = true;
-    } else if (e.changeType === "EDIT") {
-      const activeRange = sheet.getActiveRange();
-      row = activeRange.getRow();
-      const column = activeRange.getColumn();
-      
-      if (column === columnToWatch) {
-        triggerWebhook = true;
-      }
-    }
-
-    if (!triggerWebhook) return;
-
-    const values = sheet.getRange(row, 1, 1, headings.length).getValues()[0];
+    // Get the actual row number from form response
+    const namedValues = e.namedValues;
+    const range = e.range;
+    const row = range.getRow();
     
     const payload = {
       row_number: row,
       timestamp: new Date().toISOString(),
-      change_type: e.changeType,
-      ...Object.fromEntries(headings.map((name, i) => [name, values[i]]))
+      change_type: "FORM_SUBMIT",
+      ...Object.fromEntries(headings.map((name, i) => [
+        name, 
+        namedValues[name] ? namedValues[name][0] : ''
+      ]))
     };
 
     addToWebhookQueue(payload);
     processWebhookQueue();
 
   } catch (error) {
-    console.error(`Error in triggerGoogleSheetWebhook: ${error.toString()}`);
+    console.error(`Error in onFormSubmit: ${error.toString()}`);
     logError(error);
   }
 }
+
+// Rename onEdit to installableOnEdit to avoid simple triggers
+function installableOnEdit(e) {
+  // Check if this is a simple trigger (will not have auth)
+  if (!e.authMode || e.authMode === ScriptApp.AuthMode.NONE) {
+    console.log('Skipping simple trigger execution');
+    return;
+  }
+
+  try {
+    // Skip if no active range or if it's the header row
+    if (!e.range || e.range.getRow() === 1) return;
+
+    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = SHEET_NAME ? spreadsheet.getSheetByName(SHEET_NAME) : spreadsheet.getSheets()[0];
+    
+    // Skip if not in the target sheet
+    if (SHEET_NAME && e.source.getActiveSheet().getName() !== SHEET_NAME) return;
+    
+    const headings = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    const columnToWatch = COLUMN_TO_WATCH || sheet.getLastColumn();
+    
+    const activeRange = e.range;
+    const row = activeRange.getRow();
+    const column = activeRange.getColumn();
+    
+    // Only trigger if the edited column matches the column to watch
+    if (column === columnToWatch) {
+      const values = sheet.getRange(row, 1, 1, headings.length).getValues()[0];
+      
+      const payload = {
+        row_number: row,
+        timestamp: new Date().toISOString(),
+        change_type: "EDIT",
+        edited_column: headings[column - 1],
+        old_value: e.oldValue || '',
+        new_value: e.value || '',
+        ...Object.fromEntries(headings.map((name, i) => [name, values[i]]))
+      };
+
+      addToWebhookQueue(payload);
+      processWebhookQueue();
+    }
+
+  } catch (error) {
+    console.error(`Error in installableOnEdit: ${error.toString()}`);
+    logError(error);
+  }
+}
+
 
 function addToWebhookQueue(payload) {
   webhookQueue.push(payload);
